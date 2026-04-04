@@ -21,21 +21,33 @@ def init_connection():
 
 supabase = init_connection()
 
-# --- CSS Styling ---
+# --- CSS Styling (Corrected Sidebar Text to Black) ---
 st.markdown(
     """
     <style>
-    [data-testid="stSidebar"] { background-color: #001f3f !important; }
+    /* Sidebar styling with black text */
+    [data-testid="stSidebar"] { 
+        background-color: #f0f2f6 !important; 
+    }
     [data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3, 
     [data-testid="stSidebar"] label, [data-testid="stSidebar"] .stMarkdown p {
-        color: white !important; font-weight: bold !important;
+        color: #000000 !important; 
+        font-weight: bold !important;
     }
-    div[data-baseweb="select"] > div { background-color: white !important; color: black !important; }
-    .detail-box { 
-        background-color: #f8f9fa; padding: 25px; border-radius: 12px; 
-        border: 1px solid #dee2e6; color: black; box-shadow: 0px 4px 10px rgba(0,0,0,0.05);
+    .stButton>button { 
+        background-color: #3498db; 
+        color: white !important; 
+        width: 100%; 
+        font-weight: bold; 
+        border-radius: 8px; 
     }
-    .stButton>button { background-color: #3498db; color: white !important; width: 100%; font-weight: bold; border-radius: 8px; }
+    .filter-container { 
+        background-color: #ffffff; 
+        padding: 15px; 
+        border-radius: 10px; 
+        margin-bottom: 20px; 
+        border: 1px solid #d1d3d4; 
+    }
     </style>
     """,
     unsafe_allow_html=True
@@ -56,37 +68,36 @@ def fetch_clients():
         return sorted(list(set([item['client_name'] for item in res.data if item['client_name']])))
     except: return []
 
-def fetch_tasks():
+def fetch_tasks_all():
     try:
-        res = supabase.table("tasks").select("*").in_("status", ["Pending", "Inactive"]).order("deadline", desc=False).execute()
+        res = supabase.table("tasks").select("*").order("deadline", desc=False).execute()
         return res.data
     except: return []
 
 def upload_to_storage(file, folder, client):
-    """ഫയൽ അപ്‌ലോഡ് ചെയ്ത് പബ്ലിക് ലിങ്ക് നൽകുന്നു"""
     try:
-        # ക്ലയന്റ് പേര് ക്ലീൻ ചെയ്യുന്നു (സ്പേസ് ഒഴിവാക്കാൻ)
         clean_name = "".join(x for x in client if x.isalnum())
         file_ext = file.name.split('.')[-1]
         file_path = f"{folder}/{clean_name}_{int(time.time())}.{file_ext}"
-        
-        # അപ്‌ലോഡ് ചെയ്യുന്നു
-        supabase.storage.from_("media").upload(
-            path=file_path,
-            file=file.getvalue(),
-            file_options={"content-type": file.type}
-        )
-        # പബ്ലിക് ലിങ്ക് റിട്ടേൺ ചെയ്യുന്നു
+        supabase.storage.from_("media").upload(path=file_path, file=file.getvalue(), file_options={"content-type": file.type})
         return f"{SUPABASE_URL}/storage/v1/object/public/media/{file_path}"
-    except Exception as e:
-        st.error(f"❌ Upload Error ({folder}): {e}")
-        return None
+    except: return None
+
+def update_task_status(task_id, new_status, staff_comment, admin_query):
+    try:
+        supabase.table("tasks").update({
+            "status": new_status, 
+            "staff_comment": staff_comment,
+            "admin_query": admin_query
+        }).eq("id", task_id).execute()
+        return True
+    except: return False
 
 # --- Session State ---
 if "selected_task" not in st.session_state: st.session_state.selected_task = None
 if "last_user" not in st.session_state: st.session_state.last_user = None
 
-# --- SIDEBAR: LOGIN ---
+# --- SIDEBAR: LOGIN & ASSIGN TASK ---
 st.sidebar.header("🔐 User Login")
 staff_list = fetch_staff()
 current_user = st.sidebar.selectbox("Select Your Name", ["-- Select Name --"] + staff_list)
@@ -105,110 +116,123 @@ if current_user != "-- Select Name --":
         authenticated, is_admin = True, True
     elif pwd_input == STAFF_PASSWORD:
         authenticated = True
-    elif pwd_input != "":
-        st.sidebar.error("❌ Invalid Password")
+
+# --- ADMIN ONLY: ASSIGN WORK SECTION ---
+if authenticated and is_admin and st.session_state.selected_task is None:
+    st.sidebar.divider()
+    st.sidebar.header("🚀 Assign New Work")
+    clients = fetch_clients()
+    with st.sidebar.form("assign_form", clear_on_submit=True):
+        c_sel = st.selectbox("Search Client", ["-- New --"] + clients)
+        c_new = st.text_input("OR New Client Name")
+        work = st.selectbox("Work Type", ["GST", "IT", "Audit", "Consultation", "Other"])
+        stf = st.selectbox("Assign To", staff_list)
+        due = st.date_input("Deadline")
+        up_file = st.file_uploader("Attach Document", type=["pdf", "jpg", "xlsx"])
+        up_audio = st.audio_input("Record Instruction")
+        
+        if st.form_submit_button("Assign Task Now"):
+            final_c = c_new if c_new else (c_sel if c_sel != "-- New --" else "")
+            if final_c:
+                f_url = upload_to_storage(up_file, "docs", final_c) if up_file else None
+                a_url = upload_to_storage(up_audio, "audio", final_c) if up_audio else None
+                supabase.table("tasks").insert({
+                    "client_name": final_c, "work_type": work, "assigned_to": stf, 
+                    "deadline": str(due), "status": "Pending", "file_url": f_url, "audio_url": a_url
+                }).execute()
+                st.sidebar.success("✅ Work Assigned!"); time.sleep(1); st.rerun()
 
 # --- MAIN CONTENT ---
 st.markdown("<h1 style='text-align: center; color: #2c3e50;'>📝 Tax Smile Dashboard</h1>", unsafe_allow_html=True)
 
 if authenticated:
-    # --- ADMIN Actions ---
-    if is_admin and st.session_state.selected_task is None:
-        st.sidebar.header("🚀 Assign Task")
-        clients = fetch_clients()
-        with st.sidebar.form("task_form", clear_on_submit=True):
-            c_sel = st.selectbox("Search Client", ["-- New --"] + clients)
-            c_new = st.text_input("New Name")
-            work = st.selectbox("Work Type", ["GST", "IT", "Audit", "Consultation", "Other"])
-            stf = st.selectbox("Assign To", staff_list)
-            due = st.date_input("Deadline")
-            
-            # Media Upload Section
-            up_file = st.file_uploader("Attach Document (PDF/JPG)", type=["pdf", "jpg", "xlsx"])
-            up_audio = st.audio_input("Record Voice Instruction")
-            
-            if st.form_submit_button("🚀 Assign Task Now"):
-                final_c = c_new if c_new else (c_sel if c_sel != "-- New --" else "")
-                if final_c:
-                    # ഫയലുകൾ അപ്‌ലോഡ് ചെയ്യുന്നു
-                    f_url = upload_to_storage(up_file, "docs", final_c) if up_file else None
-                    a_url = upload_to_storage(up_audio, "audio", final_c) if up_audio else None
-                    
-                    try:
-                        supabase.table("tasks").insert({
-                            "client_name": final_c, "work_type": work, 
-                            "assigned_to": stf, "deadline": str(due), "status": "Pending",
-                            "file_url": f_url, "audio_url": a_url
-                        }).execute()
-                        st.sidebar.success("✅ Saved Successfully!")
-                        time.sleep(1)
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"❌ Database error: {e}")
-
-    # --- DETAIL VIEW ---
     if st.session_state.selected_task is not None:
+        # --- REPORT BOX WINDOW (FULL SCREEN VIEW) ---
         task = st.session_state.selected_task
-        try:
-            f_date = datetime.strptime(task['deadline'], '%Y-%m-%d').strftime('%d-%m-%Y')
-        except:
-            f_date = task['deadline']
-
-        st.markdown(f"""
-        <div class="detail-box">
-            <h2 style='color: #2c3e50;'>👤 {task['client_name']}</h2>
-            <hr>
-            <p style='font-size: 18px;'><b>📌 Work:</b> {task['work_type']} | <b>📅 Deadline:</b> {f_date}</p>
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown(f"## 📋 Work Report: {task['client_name']}")
         
-        st.write("---")
-        col1, col2 = st.columns(2)
-        with col1:
-            if task.get('file_url'):
-                st.subheader("📄 Document")
-                st.link_button("👁️ View / Download File", task['file_url'])
-            else:
-                st.info("No documents attached.")
-        
-        with col2:
-            if task.get('audio_url'):
-                st.subheader("🎧 Voice Instruction")
-                st.audio(task['audio_url'])
-            else:
-                st.info("No audio instruction.")
+        with st.container(border=True):
+            i1, i2, i3 = st.columns(3)
+            with i1: st.write(f"**📌 Work:** {task['work_type']}")
+            with i2: st.write(f"**📅 Deadline:** {task['deadline']}")
+            with i3: st.write(f"**👨‍💼 Staff:** {task['assigned_to']}")
 
-        if st.button("⬅️ Back to Dashboard"):
-            st.session_state.selected_task = None
-            st.rerun()
+            st.divider()
+            m1, m2 = st.columns(2)
+            with m1:
+                if task.get('audio_url'): st.audio(task['audio_url'])
+            with m2:
+                if task.get('file_url'): st.link_button("📄 Open Document", task['file_url'], use_container_width=True)
+
+            st.divider()
+            q1, q2 = st.columns(2)
+            with q1:
+                if task.get('admin_query'): st.error(f"⚠️ **Admin Query:**\n{task['admin_query']}")
+            with q2:
+                if task.get('staff_comment'): st.info(f"💬 **Staff Note:**\n{task['staff_comment']}")
+
+            st.divider()
+            st.subheader("⚙️ Update Progress")
+            status_options = ["Pending", "In Progress", "Query Sent", "Query From Admin", "Completed"]
+            try: curr_idx = status_options.index(task['status'])
+            except: curr_idx = 0
+            new_status = st.selectbox("Current Status", status_options, index=curr_idx)
             
+            if is_admin:
+                a_query = st.text_area("Admin Query", value=task.get('admin_query', '') or "")
+                s_note = task.get('staff_comment', '') 
+            else:
+                s_note = st.text_area("Staff Note / Query", value=task.get('staff_comment', '') or "")
+                a_query = task.get('admin_query', '')
+
+            b1, b2 = st.columns(2)
+            with b1:
+                if st.button("💾 Save & Submit", use_container_width=True):
+                    final_status = "Query From Admin" if is_admin and a_query != (task.get('admin_query') or "") else new_status
+                    if update_task_status(task['id'], final_status, s_note, a_query):
+                        st.success("✅ Updated!"); st.session_state.selected_task = None; time.sleep(1); st.rerun()
+            with b2:
+                if st.button("⬅️ Back to List", use_container_width=True):
+                    st.session_state.selected_task = None; st.rerun()
+
     else:
-        # --- DASHBOARD TABLE ---
-        tasks_data = fetch_tasks()
+        # --- MAIN LIST VIEW WITH FILTERS ---
+        tasks_data = fetch_tasks_all()
         if tasks_data:
             df = pd.DataFrame(tasks_data)
-            view_df = df if is_admin else df[df['assigned_to'] == current_user]
+            if not is_admin:
+                df = df[(df['assigned_to'] == current_user) & (df['status'] != 'Completed')]
             
-            if not view_df.empty:
-                disp_df = view_df.copy()
-                disp_df['deadline'] = pd.to_datetime(disp_df['deadline']).dt.strftime('%d-%m-%Y')
+            if not df.empty:
+                # Filter UI
+                st.markdown("<div class='filter-container'>🔍 <b>Quick Filter</b></div>", unsafe_allow_html=True)
+                f1, f2, f3 = st.columns(3)
+                with f1: sel_work = st.selectbox("By Work", ["All"] + sorted(df['work_type'].unique().tolist()))
+                with f2: sel_staff = st.selectbox("By Staff", ["All"] + sorted(df['assigned_to'].unique().tolist())) if is_admin else "All"
+                with f3: sel_stat = st.selectbox("By Status", ["All"] + sorted(df['status'].unique().tolist()))
+
+                # Apply Filtering
+                f_df = df.copy()
+                if sel_work != "All": f_df = f_df[f_df['work_type'] == sel_work]
+                if sel_staff != "All": f_df = f_df[f_df['assigned_to'] == sel_staff]
+                if sel_stat != "All": f_df = f_df[f_df['status'] == sel_stat]
+
+                # Markers
+                f_df['client_name'] = f_df.apply(lambda x: f"🔴 {x['client_name']} (Query)" if x['status'] == 'Query From Admin' else (f"✅ {x['client_name']} (Done)" if x['status'] == 'Completed' else x['client_name']), axis=1)
+                f_df['deadline'] = pd.to_datetime(f_df['deadline']).dt.strftime('%d-%m-%Y')
+
+                st.subheader(f"📌 Tasks Found: {len(f_df)}")
+                cols = ['client_name', 'work_type', 'deadline', 'assigned_to', 'status'] if is_admin else ['client_name', 'work_type', 'deadline', 'status']
                 
-                st.subheader(f"📌 Task Table: {current_user}")
-                sel = st.dataframe(
-                    disp_df[['client_name', 'work_type', 'deadline', 'assigned_to', 'status']],
-                    use_container_width=True, hide_index=True, on_select="rerun", selection_mode="single-row"
-                )
+                sel = st.dataframe(f_df[cols], use_container_width=True, hide_index=True, on_select="rerun", selection_mode="single-row")
+                
                 if sel.selection.rows:
-                    st.session_state.selected_task = view_df.iloc[sel.selection.rows[0]].to_dict()
+                    idx = sel.selection.rows[0]
+                    st.session_state.selected_task = f_df.iloc[idx].to_dict()
                     st.rerun()
-            else:
-                st.info(f"Hello {current_user}, no pending tasks.")
 else:
-    # ലോഗിൻ ഇൻസ്ട്രക്ഷൻ
-    if current_user == "-- Select Name --":
-        st.warning("👈 Please select your name and login from the sidebar.")
-    else:
-        st.info("👈 Please enter your password to access the Tax Smile Dashboard.")
+    st.info("👈 Please login from the sidebar.")
 
 st.divider()
 st.caption(f"Tax Smile ToDo | {datetime.now().strftime('%d/%m/%Y')}")
+    
